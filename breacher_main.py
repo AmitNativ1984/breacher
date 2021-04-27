@@ -18,7 +18,7 @@ from vision_msgs.msg import Detection2DArray
 from vision_msgs.msg import Detection2D
 from vision_msgs.msg import ObjectHypothesisWithPose
 from geometry_msgs.msg import Point
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, Vector3Stamped
 from cv_bridge import CvBridge
 
 bridge = CvBridge()
@@ -31,10 +31,10 @@ class DepthBreacher(object):
     
     def __init__(self):
         print('DepthBreacher instance created')
-        self.distanceFromSurface=None
-        self.noise=100 #[mm] depth noise
+        self.distance2surface=None
+        self.noise=500 #[mm] depth noise
         self.detections = None
-        self.distanceFromSurface = 3000
+        self.distance2surface = 3000
         self.wallThickness = 500
         self.depth = None
         self.breach_zone = None
@@ -43,7 +43,7 @@ class DepthBreacher(object):
         self.mode = 'area'#'pointingFinger'
 
     def getDistanceCallback(self, distance):
-        self.distanceFromSurface = distance
+        self.distance2surface = distance
 
     def getPointFingerCallback(self, pointingFinger):
         self.pointingFinger = pointingFinger.point
@@ -51,11 +51,11 @@ class DepthBreacher(object):
         self.pointingFinger.y = int(self.pointingFinger.y)
     
     def distance2breach(self):
-        return self.distanceFromSurface + self.noise + self.wallThickness
+        return self.distance2surface + self.noise + self.wallThickness
     
     def getDepthROI(self):
-        depthROI = np.zeros_like(self.depth)
-        depthROI[self.depth > self.distance2breach()] = 1
+        depthROI = np.ones_like(self.depth)
+        depthROI[self.depth < self.distance2breach()] = 0
         depthROI = depthROI.astype(np.uint8)
         kernel = np.ones((5, 5), np.uint8)
         depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
@@ -63,7 +63,13 @@ class DepthBreacher(object):
         depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
         return depthROI
 
-    
+    def getSurfaceNormal(self, surface_normal_vec):
+        self.surfaceNormalVec = surface_normal_vec
+        self.distance2surface = np.sqrt(self.surfaceNormalVec.vector.x ** 2 +
+                                        self.surfaceNormalVec.vector.y ** 2 + 
+                                        self.surfaceNormalVec.vector.z ** 2) * 1E3
+        pass
+
     def getBreachAreaID(self, depthROI, cc_img, n_labels, stats):
         if self.mode == 'pointingFinger':
             if self.pointingFinger is None:
@@ -138,7 +144,7 @@ class DepthBreacher(object):
             pass
         
         detectionImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(self.detectionImage, cv2.COLOR_BGR2RGB), encoding="passthrough"))
-        print("breachPoint (x,y,z)=({}, {}, {})".format(breachPoint.point.x, breachPoint.point.y, breachPoint.point.z))
+        print("breachPoint (px,py)=({}, {}), distance= {} [m]".format(breachPoint.point.x, breachPoint.point.y, breachPoint.point.z/1E3))
     
         return
 
@@ -150,4 +156,6 @@ if __name__=="__main__":
     rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, depth_breacher.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
     rospy.Subscriber("/pointingfinger/TargetPoint", PointStamped, depth_breacher.getPointFingerCallback, queue_size = 10)
     rospy.Subscriber("/d415/color/image_raw", Image, depth_breacher.getDetectionImage, queue_size=1, buff_size=2 ** 24)
+    rospy.Subscriber("/surface_normal", Vector3Stamped, depth_breacher.getSurfaceNormal, queue_size=10)
+
     rospy.spin()
