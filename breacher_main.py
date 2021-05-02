@@ -35,12 +35,12 @@ class DepthBreacher(object):
         self.noise=500 #[mm] depth noise
         self.detections = None
         self.distance2surface = 3000
-        self.wallThickness = 500
+        self.wallThickness = 200
         self.depth = None
         self.breach_zone = None
         self.pointingFinger = None
 
-        self.mode = 'area'#'pointingFinger'
+        self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
 
     def getDistanceCallback(self, distance):
         self.distance2surface = distance
@@ -60,7 +60,7 @@ class DepthBreacher(object):
         kernel = np.ones((5, 5), np.uint8)
         depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
         kernel = np.ones((9,9), np.uint8)
-        depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
+        depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_OPEN, kernel)
         return depthROI
 
     def getSurfaceNormal(self, surface_normal_vec):
@@ -70,18 +70,21 @@ class DepthBreacher(object):
                                         self.surfaceNormalVec.vector.z ** 2) * 1E3
         pass
 
-    def getBreachAreaID(self, depthROI, cc_img, n_labels, stats):
+    def getBreachAreaID(self, depthROI, cc_img, n_labels, stats, centroids):
         if self.mode == 'pointingFinger':
             if self.pointingFinger is None:
                 print('no pointingFinger recived')
                 return -1
    
-            if depthROI[self.pointingFinger.y, self.pointingFinger.x] == 0:
-                print('pointing fingure not pointing to area with depth valid for breach')
-                return -1
-
-            else:
-                label_id = cc_img[self.pointingFinger.y, self.pointingFinger.x]
+            dist = np.inf
+            label_id = -1
+            for currlabel, centroid in enumerate(centroids):
+                if depthROI[cc_img == currlabel][0] > 0:
+                    R = np.sqrt((centroid[0] - self.pointingFinger.x) ** 2 +
+                                (centroid[1] - self.pointingFinger.y) ** 2)
+                    if R < dist:
+                        dist = R
+                        label_id = currlabel
             
         elif self.mode =='area':
             # breach area is assumed to be the largest
@@ -110,12 +113,12 @@ class DepthBreacher(object):
 
         timeStamp = depthImage.header.stamp
         self.depth = bridge.imgmsg_to_cv2(depthImage, desired_encoding='passthrough')       
-
+        self.depth = cv2.GaussianBlur(self.depth, (25, 25), self.noise/20)
         depthROI = self.getDepthROI()
         n_labels, cc_img, stats, centroids = cv2.connectedComponentsWithStats(depthROI, connectivity=8)
         cc_img = np.array(cc_img).astype(np.uint8)
                 
-        label_id = self.getBreachAreaID(depthROI, cc_img, n_labels, stats)
+        label_id = self.getBreachAreaID(depthROI, cc_img, n_labels, stats, centroids)
         if label_id == -1:
             return
         
@@ -135,7 +138,7 @@ class DepthBreacher(object):
         
         # publish results
         breachPointPublisher.publish(breachPoint)
-        breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(breach_zone * 255, cv2.COLOR_BGR2RGB), encoding="passthrough"))
+        breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((depthROI / depthROI.max() * 255).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
         
         try:
             self.detectionImage[breach_zone == 1, 0] = 255
