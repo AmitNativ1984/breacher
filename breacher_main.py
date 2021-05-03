@@ -51,6 +51,12 @@ class DepthBreacher(object):
         self.pointingFinger.y = int(self.pointingFinger.y)
     
     def distance2breach(self):
+        # create meshgrid of image x,y:
+        x = np.linspace(-self.depth.shape[1] / 2, self.depth.shape[1] / 2, self.depth.shape[1])
+        y = np.linspace(-self.depth.shape[0] / 2, self.depth.shape[0] / 2, self.depth.shape[1])
+
+        xx, yy = np.meshgrid(x, y)
+
         return self.distance2surface + self.noise + self.wallThickness
     
     def getDepthROI(self):
@@ -69,6 +75,18 @@ class DepthBreacher(object):
                                         self.surfaceNormalVec.vector.y ** 2 + 
                                         self.surfaceNormalVec.vector.z ** 2) * 1E3
         pass
+
+    def getPlaneEquation(self):
+        """
+        plane eq. given its normal n=(A,B,C), passing through point on plance (x0,y0,z0):
+        P = A(x-x0) + B(y-y0) +C(z-z0) = 0
+        in our case the point on the place is the opposite normal vector coordinates, since point of view is origin
+
+        """
+
+        A, B, C = -1 * self.surfaceNormalVec.vector # TODO: what should be the sign of the normal vector?
+        D = -(A**2 + B**2 + C**2)
+        self.surfacePlane = np.array([A, B, C, D])
 
     def getBreachAreaID(self, depthROI, cc_img, n_labels, stats, centroids):
         if self.mode == 'pointingFinger':
