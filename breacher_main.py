@@ -19,62 +19,69 @@ from vision_msgs.msg import Detection2D
 from vision_msgs.msg import ObjectHypothesisWithPose
 from geometry_msgs.msg import Point
 from geometry_msgs.msg import PointStamped, Vector3Stamped
+from std_msgs.msg import Float32
 from cv_bridge import CvBridge
+import tf
 
 bridge = CvBridge()
 
 breachPointPublisher = rospy.Publisher("/seeker/breachPoint", PointStamped, queue_size=10)
 breachImagePublisher = rospy.Publisher("seeker/breachImage", Image, queue_size=10)
-detectionImagePublisher = rospy.Publisher("seeker/breachImageColor", Image, queue_size=10)
+colorImageRawPublisher = rospy.Publisher("seeker/breachImageColor", Image, queue_size=10)
 
 class DepthBreacher(object):
     
     def __init__(self):
         print('DepthBreacher instance created')
-        self.distance2surface=None
-        self.noise=400 #[mm] depth noise
+        self.noise= 500. #[mm] depth noise
         self.detections = None
-        self.distance2surface = None
-        self.wallThickness = 0
+        self.distance2window = None
+        self.wallThickness = 0.
         self.depth = None
         self.breach_zone = None
         self.pointingFinger = None
 
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
-
-    def getDistanceCallback(self, distance):
-        self.distance2surface = distance
-
-    def getPointFingerCallback(self, pointingFinger):
-        self.pointingFinger = pointingFinger.point
-        self.pointingFinger.x = int(self.pointingFinger.x)
-        self.pointingFinger.y = int(self.pointingFinger.y)
     
-    def distance2breach(self):
-        # create meshgrid of image x,y:
-        x = np.linspace(-self.depth.shape[1] / 2, self.depth.shape[1] / 2, self.depth.shape[1])
-        y = np.linspace(-self.depth.shape[0] / 2, self.depth.shape[0] / 2, self.depth.shape[1])
+    def getCurrCamWorldXYZ(self):
+        listner.waitForTransform("/map", "/base_link", self.depthImageMsg.header.stamp, rospy.Duration(4.0))
+        currCamTranslation, currCamRotation = listner.lookupTransform("/map", "/base_link", self.depthImageMsg.header.stamp)
 
-        xx, yy = np.meshgrid(x, y)
-
-        return self.distance2surface + self.noise + self.wallThickness
+        return currCamTranslation, currCamRotation
     
     def getDepthROI(self):
         depthROI = np.ones_like(self.depth)
-        depthROI[self.depth < self.distance2breach()] = 0
+        
+        # get current camera world XYZ positoin:
+        depthCamCurrPosition, depthCamCurrRot = self.getCurrCamWorldXYZ()
+        dx = self.breachPointWorldXYZ.point.x - depthCamCurrPosition[0]
+        dy = self.breachPointWorldXYZ.point.y - depthCamCurrPosition[1]
+        dz = self.breachPointWorldXYZ.point.z - depthCamCurrPosition[2]
+
+        distance2target = np.sqrt(dx**2 + dy**2 + dz**2)
+
+        distance2breach = distance2target + self.noise + self.wallThickness
+        
+        depthROI[self.depth < self.distance2breach] = 0
+        depthROI[self.depth == 0] = 1
         depthROI = depthROI.astype(np.uint8)
-        kernel = np.ones((5, 5), np.uint8)
-        depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
-        kernel = np.ones((9,9), np.uint8)
-        depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_OPEN, kernel)
+        # kernel = np.ones((9,9), np.uint8)
+        # depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_OPEN, kernel)
+        
+        # kernel = np.ones((5, 5), np.uint8)
+        # depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
+
+        margin = 20
+        depthROI[:margin, :] = 0
+        depthROI[-margin:, :] = 0
+        depthROI[:, :margin] = 0
+        depthROI[:, -margin:] = 0
+        
         return depthROI
 
-    def getSurfaceNormal(self, surface_normal_vec):
-        self.surfaceNormalVec = surface_normal_vec
-        self.distance2surface = np.sqrt(self.surfaceNormalVec.vector.x ** 2 +
-                                        self.surfaceNormalVec.vector.y ** 2 + 
-                                        self.surfaceNormalVec.vector.z ** 2) * 1E3
-        pass
+    def getBreachPointWorldXYZ(self, breachPointWorldXYZ):
+               
+        self.breachPointWorldXYZ = breachPointWorldXYZ
 
     def getPlaneEquation(self):
         """
@@ -97,7 +104,13 @@ class DepthBreacher(object):
             dist = np.inf
             label_id = -1
             for currlabel, centroid in enumerate(centroids):
-                if depthROI[cc_img == currlabel][0] > 0:
+                if depthROI[cc_img == currlabel][0] > 0:                                    
+                    listner.waitForTransform(self.depthImageMsg.header.frame, self.breachPointWorldXYZ.header.frame, self.depthImageMsg.header.stamp,
+                                            rospy.Duration(4.0))
+                    
+                    
+                    breachPointInCurrDepthCamPixels = listner.transformPoint(self.depthImageMsg.header.frame , self.breachPointWorldXYZ)
+                    
                     R = np.sqrt((centroid[0] - self.pointingFinger.x) ** 2 +
                                 (centroid[1] - self.pointingFinger.y) ** 2)
                     if R < dist:
@@ -118,9 +131,9 @@ class DepthBreacher(object):
            
         return label_id
     
-    def getDetectionImage(self, detectionImage):
-        self.detectionImage = bridge.imgmsg_to_cv2(detectionImage, desired_encoding='passthrough')
-        self.detectionImage = self.detectionImage.astype(np.uint8)
+    def getColorImageRaw(self, colorImageRaw):
+        self.colorImageRaw = bridge.imgmsg_to_cv2(colorImageRaw, desired_encoding='passthrough')
+        self.colorImageRaw = self.colorImageRaw.astype(np.uint8)
 
     def depthImageCallback(self, depthImage):
         """
@@ -130,8 +143,9 @@ class DepthBreacher(object):
         """
 
         timeStamp = depthImage.header.stamp
+        self.depthImageMsg = depthImage
         self.depth = bridge.imgmsg_to_cv2(depthImage, desired_encoding='passthrough')       
-        self.depth = cv2.GaussianBlur(self.depth, (25, 25), self.noise/20)
+        self.depth = cv2.GaussianBlur(self.depth, (11, 11), self.noise)
         depthROI = self.getDepthROI()
         n_labels, cc_img, stats, centroids = cv2.connectedComponentsWithStats(depthROI, connectivity=8)
         cc_img = np.array(cc_img).astype(np.uint8)
@@ -160,12 +174,12 @@ class DepthBreacher(object):
         breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((depthROI / depthROI.max() * 255).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
         
         try:
-            self.detectionImage[breach_zone == 1, 0] = 255
-            cv2.circle(self.detectionImage, (int(breachPoint.point.x), int(breachPoint.point.y)), 5, (0, 255, 0), -1)
+            self.colorImageRaw[breach_zone == 1, 0] = 255
+            cv2.circle(self.colorImageRaw, (int(breachPoint.point.x), int(breachPoint.point.y)), 5, (0, 255, 0), -1)
         except Exception:
             pass
         
-        detectionImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(self.detectionImage, cv2.COLOR_BGR2RGB), encoding="passthrough"))
+        colorImageRawPublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(self.colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough"))
         print("breachPoint (px,py)=({}, {}), distance= {} [m]".format(breachPoint.point.x, breachPoint.point.y, breachPoint.point.z/1E3))
     
         return
@@ -176,8 +190,9 @@ if __name__=="__main__":
     
     rospy.init_node('hatch_detector', anonymous=True)
     rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, depth_breacher.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
-    rospy.Subscriber("/pointingfinger/TargetPoint", PointStamped, depth_breacher.getPointFingerCallback, queue_size = 10)
-    rospy.Subscriber("/d415/color/image_raw", Image, depth_breacher.getDetectionImage, queue_size=1, buff_size=2 ** 24)
-    rospy.Subscriber("/surface_normal", Vector3Stamped, depth_breacher.getSurfaceNormal, queue_size=10)
+    rospy.Subscriber("/d415/color/image_raw", Image, depth_breacher.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
+    rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, depth_breacher.getBreachPointWorldXYZ, queue_size=1)
+
+    listner = tf.TransformListener()
 
     rospy.spin()
