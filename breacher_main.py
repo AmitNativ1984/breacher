@@ -32,10 +32,10 @@ class DepthBreacher(object):
     def __init__(self):
         print('DepthBreacher instance created')
         self.distance2surface=None
-        self.noise=500 #[mm] depth noise
+        self.noise=400 #[mm] depth noise
         self.detections = None
-        self.distance2surface = 3000
-        self.wallThickness = 200
+        self.distance2surface = None
+        self.wallThickness = 0
         self.depth = None
         self.breach_zone = None
         self.pointingFinger = None
@@ -138,6 +138,7 @@ class DepthBreacher(object):
                 
         label_id = self.getBreachAreaID(depthROI, cc_img, n_labels, stats, centroids)
         if label_id == -1:
+            print("invalid connected component label id [-1]")
             return
         
         breach_zone = np.zeros_like(cc_img)
