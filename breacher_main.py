@@ -45,35 +45,43 @@ class DepthBreacher(object):
         self.pointingFinger = None
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
         self.depthCamModel = PinholeCameraModel()
+        self.nonValidMarginRatio = 0.1    # ratio taken from image width and height. the pixel of world point must be in only in valid area
     
     def getDepthCameraModel(self, CameraInfo_msg):
         self.depthCamInfo_Msg = CameraInfo_msg
         self.depthCamModel.fromCameraInfo(CameraInfo_msg)
         self.depthCamWidth = CameraInfo_msg.width
         self.depthCamHeight = CameraInfo_msg.height
+
+        self. minValidRow = int(self.depthCamHeight * self.nonValidMarginRatio)
+        self. maxValidRow = int(self.depthCamHeight * (1 - self.nonValidMarginRatio))
+        self. minValidCol = int(self.depthCamWidth * self.nonValidMarginRatio)
+        self. maxValidCol = int(self.depthCamWidth * (1 - self.nonValidMarginRatio))
     
     @staticmethod
-    def transformWorld2BaseLink(ImageMsg, worldPoint3d):
-        listner.waitForTransform("/base_link", "/map", worldPoint3d.header.stamp, rospy.Duration(1.0))
+    def transformWorld2BaseLink(ImageMsg, worldPoint3d, transformTimeStamp):
+        listner.waitForTransform("/base_link", "/map", transformTimeStamp, rospy.Duration(1.0))
+        worldPoint3d.header.stamp = transformTimeStamp
         base_link_point3d = listner.transformPoint("/base_link", worldPoint3d)
         return base_link_point3d
     
     @staticmethod
-    def getFrameWorldPositionXYZ(ImageMsg):
+    def getFrameWorldPositionXYZ(ImageMsg, transformTimeStamp):
         listner.waitForTransform("/map", "/base_link", ImageMsg.header.stamp, rospy.Duration(1.0))
         currCamTranslation, currCamRotation = listner.lookupTransform("/map", "/base_link", ImageMsg.header.stamp)
 
         return currCamTranslation, currCamRotation
     
     @staticmethod
-    def pointXYZWorld_to_pointXYZCamOpt(ImageMsg, worldXYZ):
-        listner.waitForTransform(ImageMsg.header.frame_id, "/map", ImageMsg.header.stamp, rospy.Duration(1.0))
+    def pointXYZWorld_to_pointXYZCamOpt(ImageMsg, worldXYZ, transformTimeStamp):
+        listner.waitForTransform(ImageMsg.header.frame_id, "/map", transformTimeStamp, rospy.Duration(1.0))
+        worldXYZ.header.stamp = transformTimeStamp
         point_in_cam_optical_frame = listner.transformPoint(ImageMsg.header.frame_id, worldXYZ)
         return point_in_cam_optical_frame 
 
     @staticmethod
-    def pointXYZCamOp_to_pointXYZWorld(camOptXYZ):
-        listner.waitForTransform("/map", camOptXYZ.header.frame_id, camOptXYZ.header.stamp, rospy.Duration(1.0))
+    def pointXYZCamOp_to_pointXYZWorld(camOptXYZ, transformTimeStamp):
+        listner.waitForTransform("/map", camOptXYZ.header.frame_id, transformTimeStamp, rospy.Duration(1.0))
         point_world_coordinates = listner.transformPoint("/map", camOptXYZ)
         return point_world_coordinates 
     
@@ -85,17 +93,17 @@ class DepthBreacher(object):
     
         return dx, dy, dz
     @staticmethod
-    def getPossibleBreachZones(depth, distance2breach, frame_margin=20):
+    def getPossibleBreachZones(depth, distance2breach, frame_margin=15):
         breachZones = np.ones_like(depth)
         
         breachZones[depth < distance2breach] = 0
         breachZones[depth == 0] = 1
         breachZones = breachZones.astype(np.uint8)
-        # kernel = np.ones((9,9), np.uint8)
-        # depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_OPEN, kernel)
+        kernel = np.ones((25,25), np.uint8)
+        breachZones = cv2.morphologyEx(breachZones, cv2.MORPH_OPEN, kernel)
         
         # kernel = np.ones((5, 5), np.uint8)
-        # depthROI = cv2.morphologyEx(depthROI, cv2.MORPH_CLOSE, kernel)
+        # breachZones = cv2.morphologyEx(breachZones, cv2.MORPH_CLOSE, kernel)
 
         breachZones[:frame_margin, :] = 0
         breachZones[-frame_margin:, :] = 0
@@ -116,11 +124,6 @@ class DepthBreacher(object):
         label_id = -1
         for currlabel, centroid in enumerate(centroids):
             if breach_zones[cc_img == currlabel][0] > 0:                                    
-                # listner.waitForTransform(self.depthImageMsg.header.frame, self.breachPointWorldXYZ.header.frame, self.depthImageMsg.header.stamp,
-                #                         rospy.Duration(4.0))
-                
-                
-                # breachPointInCurrDepthCamPixels = listner.transformPoint(self.depthImageMsg.header.frame , self.breachPointWorldXYZ)
                 
                 R = np.sqrt((centroid[0] - pixel[0]) ** 2 +
                             (centroid[1] - pixel[1]) ** 2)
@@ -144,18 +147,17 @@ class DepthBreacher(object):
         timeStamp = depthImageMsg.header.stamp
         self.depthImageMsg = depthImageMsg
         depth = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')       
-        depth = cv2.GaussianBlur(depth, (11, 11), self.noise)
+        # depth = cv2.GaussianBlur(depth, (11, 11), self.noise)
         
+        #todo: remove
         depthCamInfo_Msg = self.depthCamInfo_Msg
-
-        # get the current camera poistion in world coordinates (x,y,z)
-        depthCamWorldXYZ, depthCamWorldRotation = self.getFrameWorldPositionXYZ(depthCamInfo_Msg)
+        depthCamTimeStamp = depthCamInfo_Msg.header.stamp
 
         # get current breach point in world coordinates (x,y,z)
         breachPointWorldXYZ = self.breachPointWorldXYZ
         
         # get vector from current position to breach point in base_link coordinate system
-        cam2BreachPoint3DPoint = self.transformWorld2BaseLink(depthCamInfo_Msg, breachPointWorldXYZ)
+        cam2BreachPoint3DPoint = self.transformWorld2BaseLink(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
         
         # get distance to target by subtracting target world XYZ from current robot position
         # cam2BreachPoint3DPoint = self.subtructVectors3D(breachPointWorldXYZ, depthCamWorldXYZ)
@@ -164,11 +166,16 @@ class DepthBreacher(object):
 
         # convert breach point in world coordinates to camera optical coordinates (x, y, z)
         # breachPointCameraOpticalXYZ = self.point3DBaseLink2CameraPixels(depthCamInfo_Msg, breachPointWorldXYZ)
-        breachPointCameraOpticalXYZ = self.pointXYZWorld_to_pointXYZCamOpt(depthCamInfo_Msg, breachPointWorldXYZ)
+        breachPointCameraOpticalXYZ = self.pointXYZWorld_to_pointXYZCamOpt(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
         
         # get breach point in camera pixels:
         u, v = self.depthCamModel.project3dToPixel((breachPointCameraOpticalXYZ.point.x, breachPointCameraOpticalXYZ.point.y, breachPointCameraOpticalXYZ.point.z))
-        
+        if u <= self.minValidRow or u >= self.maxValidRow or \
+            v <= self.minValidCol or v >= self.maxValidRow:
+            print("projected world breach point to pixels {}, {} non valid in depth cam".format(u,v))
+            # return -1
+
+
         breach_zones = self.getPossibleBreachZones(depth, distance2breach)
 
         
@@ -182,9 +189,11 @@ class DepthBreacher(object):
             print("invalid connected component label id [-1]")
             return
         
+        u_new = centroids[label_id, 0]
+        v_new = centroids[label_id, 1]
+
         breach_zone = np.zeros_like(cc_img)
         breach_zone[cc_img == label_id] = 1
-      
         # breach point in [u,v, distance]
         breachPoint = PointStamped()
         breachPoint.header.stamp = timeStamp
@@ -194,20 +203,17 @@ class DepthBreacher(object):
         breachPoint.point.z = distance2breach
 
         # breach point in camera optical frame coordinates
-        ray = np.array(self.depthCamModel.projectPixelTo3dRay((u,v)))
+        ray = np.array(self.depthCamModel.projectPixelTo3dRay((u_new,v_new)))
         ray /= np.linalg.norm(ray)
         breachPointCameraOpticalCoordinates = PointStamped()
-        breachPointCameraOpticalCoordinates.header.stamp = timeStamp
+        breachPointCameraOpticalCoordinates.header.stamp = depthCamTimeStamp
         breachPointCameraOpticalCoordinates.header.frame_id = depthImageMsg.header.frame_id
-        breachPointCameraOpticalCoordinates.point.x = ray[0] * distance2target
-        breachPointCameraOpticalCoordinates.point.y = ray[1] * distance2target
-        breachPointCameraOpticalCoordinates.point.z = ray[2] * distance2target
+        breachPointCameraOpticalCoordinates.point.x = ray[0] * distance2target/1E3
+        breachPointCameraOpticalCoordinates.point.y = ray[1] * distance2target/1E3
+        breachPointCameraOpticalCoordinates.point.z = ray[2] * distance2target/1E3
 
         # transform breach point in camera optical frame to world XYZ
-        breachPointWorld = self.pointXYZCamOp_to_pointXYZWorld(breachPointCameraOpticalCoordinates)
-        breachPointWorld.point.x /= 1E3
-        breachPointWorld.point.y /= 1E3
-        breachPointWorld.point.z /= 1E3
+        breachPointWorld = self.pointXYZCamOp_to_pointXYZWorld(breachPointCameraOpticalCoordinates, depthCamTimeStamp)
         breachPointWorldPublisher.publish(breachPointWorld)
 
         # breach vector
@@ -218,8 +224,14 @@ class DepthBreacher(object):
         breach3DOpticalFramePublisher.publish(breachPointCameraOpticalXYZ)
         
         # publish results
+        breachZone_ = np.zeros((breach_zone.shape[0], breach_zone.shape[1], 3))
+        breachZone_[...,0] = breach_zones
+        breachZone_[...,1] = breach_zones
+        breachZone_[...,2] = breach_zones
+        breachZone_ *= breachZone_.max() * 255
+        cv2.circle(breachZone_, (int(u_new), int(v_new)), 5, (255, 0, 0), -1)
         breachPointPublisher.publish(breachPoint)
-        breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((breach_zones / breach_zones.max() * 255).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
+        breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((breachZone_).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
         
         breach_zone = cv2.resize(breach_zone, (self.colorImageRaw.shape[1], self.colorImageRaw.shape[0]), interpolation=cv2.INTER_NEAREST)
         colorImageRaw = self.colorImageRaw.copy()
@@ -239,7 +251,7 @@ if __name__=="__main__":
     depth_breacher=DepthBreacher()
     
     rospy.init_node('hatch_detector', anonymous=True)
-    rospy.Subscriber("/d415/depth/image_rect_raw", Image, depth_breacher.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
+    rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, depth_breacher.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
     rospy.Subscriber("/d415/color/image_raw", Image, depth_breacher.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
     rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, depth_breacher.getWorldPointXYZCallback, queue_size=1)
     rospy.Subscriber("/d415/aligned_depth_to_color/camera_info", CameraInfo, depth_breacher.getDepthCameraModel, queue_size=1)
