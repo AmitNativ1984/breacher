@@ -82,6 +82,7 @@ class DepthBreacher(object):
     @staticmethod
     def pointXYZCamOp_to_pointXYZWorld(camOptXYZ, transformTimeStamp):
         listner.waitForTransform("/map", camOptXYZ.header.frame_id, transformTimeStamp, rospy.Duration(1.0))
+        camOptXYZ.header.stamp = transformTimeStamp
         point_world_coordinates = listner.transformPoint("/map", camOptXYZ)
         return point_world_coordinates 
     
@@ -144,14 +145,13 @@ class DepthBreacher(object):
         disance2hatch: distance breach plane given in [mm] (assuming perpedicular position to plane)
         """
 
-        timeStamp = depthImageMsg.header.stamp
         self.depthImageMsg = depthImageMsg
         depth = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')       
         # depth = cv2.GaussianBlur(depth, (11, 11), self.noise)
         
         #todo: remove
         depthCamInfo_Msg = self.depthCamInfo_Msg
-        depthCamTimeStamp = depthCamInfo_Msg.header.stamp
+        depthCamTimeStamp = depthImageMsg.header.stamp
 
         # get current breach point in world coordinates (x,y,z)
         breachPointWorldXYZ = self.breachPointWorldXYZ
@@ -196,7 +196,7 @@ class DepthBreacher(object):
         breach_zone[cc_img == label_id] = 1
         # breach point in [u,v, distance]
         breachPoint = PointStamped()
-        breachPoint.header.stamp = timeStamp
+        breachPoint.header.stamp = depthCamTimeStamp
         breachPoint.header.frame_id = 'd415_depth_frame'
         breachPoint.point.x = centroids[label_id, 0]
         breachPoint.point.y = centroids[label_id, 1]
@@ -242,7 +242,8 @@ class DepthBreacher(object):
         newImageMsg = bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough")
         newImageMsg.header.stamp = rospy.Time.now()
         colorImageRawPublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough"))
-        print("breachPoint (px,py)=({}, {}), distance= {} [m]".format(breachPoint.point.x, breachPoint.point.y, breachPoint.point.z/1E3))
+        
+        print("breachPoint in world coordinates (x,y,z) = {} [m]".format(breachPointWorld.point.x, breachPointWorld.point.y, breachPointWorld.point.z/1E3))
     
         return
 
