@@ -59,28 +59,28 @@ class DepthBreacher(object):
         self. maxValidCol = int(self.depthCamWidth * (1 - self.nonValidMarginRatio))
     
     @staticmethod
-    def transformWorld2BaseLink(ImageMsg, worldPoint3d, transformTimeStamp):
+    def tfWorld2BaseLink(ImageMsg, worldPoint3d, transformTimeStamp):
         listner.waitForTransform("/base_link", "/map", transformTimeStamp, rospy.Duration(1.0))
         worldPoint3d.header.stamp = transformTimeStamp
         base_link_point3d = listner.transformPoint("/base_link", worldPoint3d)
         return base_link_point3d
     
     @staticmethod
-    def getFrameWorldPositionXYZ(ImageMsg, transformTimeStamp):
+    def tfFrameWorld2PositionXYZ(ImageMsg, transformTimeStamp):
         listner.waitForTransform("/map", "/base_link", ImageMsg.header.stamp, rospy.Duration(1.0))
         currCamTranslation, currCamRotation = listner.lookupTransform("/map", "/base_link", ImageMsg.header.stamp)
 
         return currCamTranslation, currCamRotation
     
     @staticmethod
-    def pointXYZWorld_to_pointXYZCamOpt(ImageMsg, worldXYZ, transformTimeStamp):
+    def tfPointXYZWorld_to_pointXYZCamOpt(ImageMsg, worldXYZ, transformTimeStamp):
         listner.waitForTransform(ImageMsg.header.frame_id, "/map", transformTimeStamp, rospy.Duration(1.0))
         worldXYZ.header.stamp = transformTimeStamp
         point_in_cam_optical_frame = listner.transformPoint(ImageMsg.header.frame_id, worldXYZ)
         return point_in_cam_optical_frame 
 
     @staticmethod
-    def pointXYZCamOp_to_pointXYZWorld(camOptXYZ, transformTimeStamp):
+    def tfPointXYZCamOp_to_pointXYZWorld(camOptXYZ, transformTimeStamp):
         listner.waitForTransform("/map", camOptXYZ.header.frame_id, transformTimeStamp, rospy.Duration(1.0))
         camOptXYZ.header.stamp = transformTimeStamp
         point_world_coordinates = listner.transformPoint("/map", camOptXYZ)
@@ -157,7 +157,7 @@ class DepthBreacher(object):
         breachPointWorldXYZ = self.breachPointWorldXYZ
         
         # get vector from current position to breach point in base_link coordinate system
-        cam2BreachPoint3DPoint = self.transformWorld2BaseLink(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
+        cam2BreachPoint3DPoint = self.tfWorld2BaseLink(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
         
         # get distance to target by subtracting target world XYZ from current robot position
         # cam2BreachPoint3DPoint = self.subtructVectors3D(breachPointWorldXYZ, depthCamWorldXYZ)
@@ -166,7 +166,7 @@ class DepthBreacher(object):
 
         # convert breach point in world coordinates to camera optical coordinates (x, y, z)
         # breachPointCameraOpticalXYZ = self.point3DBaseLink2CameraPixels(depthCamInfo_Msg, breachPointWorldXYZ)
-        breachPointCameraOpticalXYZ = self.pointXYZWorld_to_pointXYZCamOpt(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
+        breachPointCameraOpticalXYZ = self.tfPointXYZWorld_to_pointXYZCamOpt(depthImageMsg, breachPointWorldXYZ, transformTimeStamp=depthCamTimeStamp)
         
         # get breach point in camera pixels:
         u, v = self.depthCamModel.project3dToPixel((breachPointCameraOpticalXYZ.point.x, breachPointCameraOpticalXYZ.point.y, breachPointCameraOpticalXYZ.point.z))
@@ -213,7 +213,7 @@ class DepthBreacher(object):
         breachPointCameraOpticalCoordinates.point.z = ray[2] * distance2target/1E3
 
         # transform breach point in camera optical frame to world XYZ
-        breachPointWorld = self.pointXYZCamOp_to_pointXYZWorld(breachPointCameraOpticalCoordinates, depthCamTimeStamp)
+        breachPointWorld = self.tfPointXYZCamOp_to_pointXYZWorld(breachPointCameraOpticalCoordinates, depthCamTimeStamp)
         breachPointWorldPublisher.publish(breachPointWorld)
 
         # breach vector
