@@ -93,6 +93,7 @@ class DepthBreacher(object):
         dz = pointXYZ.point.z - cameraXYZ[2]
     
         return dx, dy, dz
+
     @staticmethod
     def getPossibleBreachZones(depth, distance2breach, frame_margin=15):
         breachZones = np.ones_like(depth)
@@ -116,7 +117,6 @@ class DepthBreacher(object):
     def getWorldPointXYZCallback(self, breachPointWorldXYZ):
                
         self.breachPointWorldXYZ = breachPointWorldXYZ
-
 
     @staticmethod
     def getBreachAreaID(breach_zones, cc_img, pixel, n_labels, stats, centroids, mode='pointingFinger'):
