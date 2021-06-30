@@ -53,6 +53,8 @@ class DepthBreacher(object):
         rospy.Subscriber("/d415/color/image_raw", Image, self.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
         rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, self.getWorldPointXYZCallback, queue_size=1)
         rospy.Subscriber("/d415/aligned_depth_to_color/camera_info", CameraInfo, self.getDepthCameraModel, queue_size=1)
+        rospy.Subscriber("/surface_normal", Vector3Stamped, depth_breacher.getSurfaceNormal, queue_size=10)
+
         rospy.logdebug("subscribers init successfull")
     
     def init_publishers(self):
@@ -62,6 +64,7 @@ class DepthBreacher(object):
         self.vec3DPublisher = rospy.Publisher("/breacher/breachPoint3D", PointStamped, queue_size=10)
         self.breach3DOpticalFramePublisher = rospy.Publisher("/breacher/breachPoint3DCamOpt", PointStamped, queue_size=10)
         self.breachPointWorldPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
+
         rospy.logdebug("publishers init successfull")
     
     def getDepthCameraModel(self, CameraInfo_msg):
@@ -103,6 +106,20 @@ class DepthBreacher(object):
         return R * self.camRays
     
     
+    def getSurfaceNormal(self, surface_normal_vec):
+        self.surfaceNormal = surface_normal_vec
+        
+    @staticmethod
+    def projectXYZonSurfaceNormal(xyz, surfaceNormal):
+        projetion = surfaceNormal.x * xyz[..., X] + surfaceNormal.y * xyz[..., Y] + surfaceNormal.z * xyz[..., Z]
+        return projetion
+        
+    @staticmethod
+    def thresholdProjection(projection, surfaceNormal):
+        possibleBreachZones = np.zeros(size(projection))
+        possibleBreachZones[projection > np.linalg.norm(surface) +  + self.noise] = 1
+        return possibleBreachZones
+
     @staticmethod
     def tranformXYZ(sourceXYZ, T):
         """ T is 4x4 Mat of tranformation in homegenous coordinates (x,y,z,1) """
