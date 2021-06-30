@@ -26,17 +26,13 @@ import tf
 
 bridge = CvBridge()
 
-breachPointPublisher = rospy.Publisher("/breacher/breachPoint", PointStamped, queue_size=10)
-breachImagePublisher = rospy.Publisher("/breacher/breachImage", Image, queue_size=10)
-colorImageRawPublisher = rospy.Publisher("/breacher/breachImageColor", Image, queue_size=1)
-vec3DPublisher = rospy.Publisher("/breacher/breachPoint3D", PointStamped, queue_size=10)
-breach3DOpticalFramePublisher = rospy.Publisher("/breacher/breachPoint3DCamOpt", PointStamped, queue_size=10)
-breachPointWorldPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
+X = 0
+Y = 1
+Z = 2
 
 class DepthBreacher(object):
     
     def __init__(self):
-        print('DepthBreacher instance created')
         self.noise= 500. #[mm] depth noise
         self.detections = None
         self.distance2window = None
@@ -46,6 +42,27 @@ class DepthBreacher(object):
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
         self.depthCamModel = PinholeCameraModel()
         self.nonValidMarginRatio = 0.1    # ratio taken from image width and height. the pixel of world point must be in only in valid area
+        self.cameraRayInitiated = False
+        rospy.init_node('depth_breach', anonymous=True)
+        rospy.loginfo('node depth_breach created')
+        self.init_subsrcibers()
+        self.init_publishers()
+
+    def init_subsrcibers(self):
+        rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, self.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
+        rospy.Subscriber("/d415/color/image_raw", Image, self.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
+        rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, self.getWorldPointXYZCallback, queue_size=1)
+        rospy.Subscriber("/d415/aligned_depth_to_color/camera_info", CameraInfo, self.getDepthCameraModel, queue_size=1)
+        rospy.logdebug("subscribers init successfull")
+    
+    def init_publishers(self):
+        self.breachPointPublisher = rospy.Publisher("/breacher/breachPoint", PointStamped, queue_size=10)
+        self.breachImagePublisher = rospy.Publisher("/breacher/breachImage", Image, queue_size=10)
+        self.colorImageRawPublisher = rospy.Publisher("/breacher/breachImageColor", Image, queue_size=1)
+        self.vec3DPublisher = rospy.Publisher("/breacher/breachPoint3D", PointStamped, queue_size=10)
+        self.breach3DOpticalFramePublisher = rospy.Publisher("/breacher/breachPoint3DCamOpt", PointStamped, queue_size=10)
+        self.breachPointWorldPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
+        rospy.logdebug("publishers init successfull")
     
     def getDepthCameraModel(self, CameraInfo_msg):
         self.depthCamInfo_Msg = CameraInfo_msg
@@ -57,6 +74,62 @@ class DepthBreacher(object):
         self. maxValidRow = int(self.depthCamHeight * (1 - self.nonValidMarginRatio))
         self. minValidCol = int(self.depthCamWidth * self.nonValidMarginRatio)
         self. maxValidCol = int(self.depthCamWidth * (1 - self.nonValidMarginRatio))
+
+        if not self.cameraRayInitiated:
+            self.initateCameraRays()
+    
+    def initateCameraRays(self):               
+        self.camRays = np.zeros((self.depthCamHeight, self.depthCamWidth, 3))
+        row = range(0, self.depthCamHeight)    
+        col = range(0, self.depthCamWidth)    
+
+        cols, rows = np.meshgrid(col, row)
+        
+        self.camRays[..., X] = (cols - self.depthCamModel.cx()) / self.depthCamModel.fx()
+        self.camRays[..., Y] = (rows - self.depthCamModel.cy()) / self.depthCamModel.fy()
+        norm = np.sqrt(self.camRays[..., X]**2 + self.camRays[..., Y]**2 + 1)
+        self.camRays[..., X] /= norm
+        self.camRays[..., Y] /= norm
+        self.camRays[..., Z] = 1.0 / norm
+              
+        self.cameraRayInitiated = True
+        rospy.loginfo("created camera rays")
+
+    def projectCamOptRaysTo3D(self, depth):
+        """
+            project depth image to 3d space (in camera opt coordinates) by multiplying ray of a pixel by its depth value
+        """
+        R = np.dstack((depth, depth, depth))
+        return R * self.camRays
+    
+    
+    @staticmethod
+    def tranformXYZ(sourceXYZ, T):
+        """ T is 4x4 Mat of tranformation in homegenous coordinates (x,y,z,1) """
+
+        x = sourceXYZ[...,X]    # MxN
+        y = sourceXYZ[...,Y]    # MxN
+        z = sourceXYZ[...,Z]    # MxN
+
+        # xyz1: 4xM*N
+        xyz1 = np.vstack(x.reshape((1, -1)),
+                         y.reshape((1, -1)),
+                         z.reshape((1, -1)),
+                         np.ones_like(x).reshape((1, -1)))
+        
+        xyz1World = np.dot(T, xyz1)
+
+        worldXYZ = np.dstack(xyz1World[X, ...].reshape((x.shape[0], -1)),
+                             xyz1World[Y, ...].reshape((y.shape[0], -1)),
+                             xyz1World[Z, ...].reshape((z.shape[0], -1)))
+
+        return worldXYZ     # MxNx3
+
+    @staticmethod
+    def getTransformMatrix4_toWorld(ImageMsg):
+        """ get 4x4 transofrmation matrix from camera optical frame to map """
+        M = listner.asMatrix("/map", ImageMsg.header)
+        return M
     
     @staticmethod
     def tfWorld2BaseLink(ImageMsg, worldPoint3d, transformTimeStamp):
@@ -146,13 +219,14 @@ class DepthBreacher(object):
         """
 
         self.depthImageMsg = depthImageMsg
-        depth = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')       
-        # depth = cv2.GaussianBlur(depth, (11, 11), self.noise)
-        
-        #todo: remove
-        depthCamInfo_Msg = self.depthCamInfo_Msg
+        depth = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
         depthCamTimeStamp = depthImageMsg.header.stamp
 
+        # convert current depth map to world XYZ coordinates using camera rays and depth map
+        camOptXYZ = self.projectCamOptRaysTo3D(depth)
+        T = self.getTransformMatrix4_toWorld(depthImageMsg)
+        worldXYZ = self.tranformXYZ(camOptXYZ, T)
+        
         # get current breach point in world coordinates (x,y,z)
         breachPointWorldXYZ = self.breachPointWorldXYZ
         
@@ -214,14 +288,14 @@ class DepthBreacher(object):
 
         # transform breach point in camera optical frame to world XYZ
         breachPointWorld = self.tfPointXYZCamOp_to_pointXYZWorld(breachPointCameraOpticalCoordinates, depthCamTimeStamp)
-        breachPointWorldPublisher.publish(breachPointWorld)
+        self.breachPointWorldPublisher.publish(breachPointWorld)
 
         # breach vector
         breachVec3D = cam2BreachPoint3DPoint
-        vec3DPublisher.publish(breachVec3D)
+        self.vec3DPublisher.publish(breachVec3D)
 
         # breach point in camera optical frame
-        breach3DOpticalFramePublisher.publish(breachPointCameraOpticalXYZ)
+        self.breach3DOpticalFramePublisher.publish(breachPointCameraOpticalXYZ)
         
         # publish results
         breachZone_ = np.zeros((breach_zone.shape[0], breach_zone.shape[1], 3))
@@ -230,8 +304,8 @@ class DepthBreacher(object):
         breachZone_[...,2] = breach_zones
         breachZone_ *= breachZone_.max() * 255
         cv2.circle(breachZone_, (int(u_new), int(v_new)), 5, (255, 0, 0), -1)
-        breachPointPublisher.publish(breachPoint)
-        breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((breachZone_).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
+        self.breachPointPublisher.publish(breachPoint)
+        self.breachImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor((breachZone_).astype(np.uint8), cv2.COLOR_BGR2RGB), encoding="passthrough"))
         
         breach_zone = cv2.resize(breach_zone, (self.colorImageRaw.shape[1], self.colorImageRaw.shape[0]), interpolation=cv2.INTER_NEAREST)
         colorImageRaw = self.colorImageRaw.copy()
@@ -241,7 +315,7 @@ class DepthBreacher(object):
         
         newImageMsg = bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough")
         newImageMsg.header.stamp = rospy.Time.now()
-        colorImageRawPublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough"))
+        self.colorImageRawPublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough"))
         
         print("breachPoint in world coordinates (x,y,z) = {} [m]".format(breachPointWorld.point.x, breachPointWorld.point.y, breachPointWorld.point.z/1E3))
     
@@ -249,13 +323,6 @@ class DepthBreacher(object):
 
 
 if __name__=="__main__":
-    depth_breacher=DepthBreacher()
-    
-    rospy.init_node('hatch_detector', anonymous=True)
-    rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, depth_breacher.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
-    rospy.Subscriber("/d415/color/image_raw", Image, depth_breacher.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
-    rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, depth_breacher.getWorldPointXYZCallback, queue_size=1)
-    rospy.Subscriber("/d415/aligned_depth_to_color/camera_info", CameraInfo, depth_breacher.getDepthCameraModel, queue_size=1)
+    depth_breacher=DepthBreacher()  
     listner = tf.TransformListener()
-
     rospy.spin()
