@@ -33,10 +33,11 @@ Z = 2
 class DepthBreacher(object):
     
     def __init__(self):
-        self.noise= 500. #[mm] depth noise
+        self.noise= 1.00 #[m] depth noise
         self.detections = None
         self.distance2window = None
         self.wallThickness = 0.
+        self.infDistance = 500E3 #[m]
         self.breach_zone = None
         self.pointingFinger = None
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
@@ -53,7 +54,7 @@ class DepthBreacher(object):
         rospy.Subscriber("/d415/color/image_raw", Image, self.getColorImageRaw, queue_size=1, buff_size=2 ** 24)
         rospy.Subscriber("/seeker/windowCenterWorldPoint", PointStamped, self.getWorldPointXYZCallback, queue_size=1)
         rospy.Subscriber("/d415/aligned_depth_to_color/camera_info", CameraInfo, self.getDepthCameraModel, queue_size=1)
-        rospy.Subscriber("/surface_normal", Vector3Stamped, depth_breacher.getSurfaceNormal, queue_size=10)
+        rospy.Subscriber("/surface_normal", Vector3Stamped, self.getSurfaceNormal, queue_size=10)
 
         rospy.logdebug("subscribers init successfull")
     
@@ -64,7 +65,8 @@ class DepthBreacher(object):
         self.vec3DPublisher = rospy.Publisher("/breacher/breachPoint3D", PointStamped, queue_size=10)
         self.breach3DOpticalFramePublisher = rospy.Publisher("/breacher/breachPoint3DCamOpt", PointStamped, queue_size=10)
         self.breachPointWorldPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
-
+        self.projectionImagePublisher = rospy.Publisher("/breacher/projectionImage", Image, queue_size=10)
+        self.projectionBreachZoneImagePublisher = rospy.Publisher("/breacher/projectionBreachZoneImage", Image, queue_size=10)
         rospy.logdebug("publishers init successfull")
     
     def getDepthCameraModel(self, CameraInfo_msg):
@@ -111,14 +113,15 @@ class DepthBreacher(object):
         
     @staticmethod
     def projectXYZonSurfaceNormal(xyz, surfaceNormal):
-        projetion = surfaceNormal.x * xyz[..., X] + surfaceNormal.y * xyz[..., Y] + surfaceNormal.z * xyz[..., Z]
+        projetion = surfaceNormal.vector.x * xyz[..., X] + surfaceNormal.vector.y * xyz[..., Y] + surfaceNormal.vector.z * xyz[..., Z]
         return projetion
         
     @staticmethod
-    def thresholdProjection(projection, surfaceNormal):
-        possibleBreachZones = np.zeros(size(projection))
-        possibleBreachZones[projection > np.linalg.norm(surface) +  + self.noise] = 1
-        return possibleBreachZones
+    def thresholdProjection(projection, surfaceNormal, noise=0.):
+        normalVec = np.array([surfaceNormal.vector.x, surfaceNormal.vector.y, surfaceNormal.vector.z])
+        bwImg = np.zeros((projection.shape))
+        bwImg[projection/1E3 > np.linalg.norm(normalVec) + noise] = 1
+        return bwImg
 
     @staticmethod
     def tranformXYZ(sourceXYZ, T):
@@ -129,16 +132,16 @@ class DepthBreacher(object):
         z = sourceXYZ[...,Z]    # MxN
 
         # xyz1: 4xM*N
-        xyz1 = np.vstack(x.reshape((1, -1)),
+        xyz1 = np.vstack((x.reshape((1, -1)),
                          y.reshape((1, -1)),
                          z.reshape((1, -1)),
-                         np.ones_like(x).reshape((1, -1)))
+                         np.ones_like(x).reshape((1, -1))))
         
         xyz1World = np.dot(T, xyz1)
 
-        worldXYZ = np.dstack(xyz1World[X, ...].reshape((x.shape[0], -1)),
+        worldXYZ = np.dstack((xyz1World[X, ...].reshape((x.shape[0], -1)),
                              xyz1World[Y, ...].reshape((y.shape[0], -1)),
-                             xyz1World[Z, ...].reshape((z.shape[0], -1)))
+                             xyz1World[Z, ...].reshape((z.shape[0], -1))))
 
         return worldXYZ     # MxNx3
 
@@ -236,14 +239,25 @@ class DepthBreacher(object):
         """
 
         self.depthImageMsg = depthImageMsg
-        depth = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
+        surfaceNormal = self.surfaceNormal
+        depthOrg = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
+        depth = depthOrg.copy()
+        depth[depth == 0] = self.infDistance
         depthCamTimeStamp = depthImageMsg.header.stamp
 
         # convert current depth map to world XYZ coordinates using camera rays and depth map
         camOptXYZ = self.projectCamOptRaysTo3D(depth)
         T = self.getTransformMatrix4_toWorld(depthImageMsg)
+        # transform xyz points in camera opt to map coordinates
         worldXYZ = self.tranformXYZ(camOptXYZ, T)
-        
+        projection = self.projectXYZonSurfaceNormal(worldXYZ,surfaceNormal)
+        projectionImgMsg = CvBridge().cv2_to_imgmsg((np.abs(projection) - np.abs(projection).min()) / np.abs(projection).max() * 255).astype(np.uint8), 'passthrough')
+        self.projectionImagePublisher.publish(projectionImgMsg)
+        breach_zone_by_projection = self.thresholdProjection(projection, surfaceNormal, noise=self.noise)
+        breach_zone_by_projection *= 255
+        breach_zone_by_projection_ImageMsg = CvBridge().cv2_to_imgmsg(breach_zone_by_projection.astype(np.uint8), 'passthrough')
+        self.projectionBreachZoneImagePublisher.publish(breach_zone_by_projection_ImageMsg)
+
         # get current breach point in world coordinates (x,y,z)
         breachPointWorldXYZ = self.breachPointWorldXYZ
         
