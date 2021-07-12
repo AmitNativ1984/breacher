@@ -36,7 +36,7 @@ class DepthBreacher(object):
         self.noise= 0.25 #[m] depth noise
         self.detections = None
         self.distance2window = None
-        self.infDistance = 500E3 #[m]
+        self.infDistance = 20 #[m]
         self.breach_zone = None
         self.pointingFinger = None
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
@@ -63,6 +63,7 @@ class DepthBreacher(object):
         self.colorImagePublisher = rospy.Publisher("/breacher/breachImageColor", Image, queue_size=1)
         self.breachPointWorldPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
         self.projectionImagePublisher = rospy.Publisher("/breacher/projectionImage", Image, queue_size=10)
+        self.thresholdProjectionPublisher = rospy.Publisher("/breach/threholdedProjectio", Image, queue_size=10)
         rospy.logdebug("publishers init successfull")
     
     def getDepthCameraModel(self, CameraInfo_msg):
@@ -183,25 +184,6 @@ class DepthBreacher(object):
     
         return dx, dy, dz
 
-    @staticmethod
-    def getPossibleBreachZones(depth, distance2breach, frame_margin=15):
-        breachZones = np.ones_like(depth)
-        
-        breachZones[depth < distance2breach] = 0
-        breachZones[depth == 0] = 1
-        breachZones = breachZones.astype(np.uint8)
-        kernel = np.ones((25,25), np.uint8)
-        breachZones = cv2.morphologyEx(breachZones, cv2.MORPH_OPEN, kernel)
-        
-        # kernel = np.ones((5, 5), np.uint8)
-        # breachZones = cv2.morphologyEx(breachZones, cv2.MORPH_CLOSE, kernel)
-
-        breachZones[:frame_margin, :] = 0
-        breachZones[-frame_margin:, :] = 0
-        breachZones[:, :frame_margin] = 0
-        breachZones[:, -frame_margin:] = 0
-        
-        return breachZones
 
     def getWorldPointXYZCallback(self, breachPointWorld):
                
@@ -238,7 +220,6 @@ class DepthBreacher(object):
 
         return pointstamped
 
-    
     def removeImageMargins(self, img):
         img[:self.minValidRow, :] = 0
         img[self.maxValidRow:, :] = 0   
@@ -257,7 +238,8 @@ class DepthBreacher(object):
         surfaceNormal = self.surfaceNormal
         depthOrg = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
         depth = depthOrg.copy()
-        depth[depth == 0] = self.infDistance
+        depth[depth == 0] = self.infDistance * 1E3
+        depth = cv2.GaussianBlur(depth, (25, 25), 0.25)
         depthCamTimeStamp = depthImageMsg.header.stamp
 
         # convert current depth map to world XYZ coordinates using camera rays and depth map
@@ -266,14 +248,14 @@ class DepthBreacher(object):
         # transform xyz points in camera opt to map coordinates
         worldXYZ = self.tranformXYZ(camOptXYZ, T)
         projection = self.projectXYZonSurfaceNormal(worldXYZ, surfaceNormal)
-        projectionImgMsg = CvBridge().cv2_to_imgmsg( ((np.abs(projection) - np.abs(projection).min()) / np.abs(projection).max() * 255).astype(np.uint8), 'passthrough')
+        projectionImgMsg = CvBridge().cv2_to_imgmsg( (np.abs((np.abs(projection) - np.abs(projection).min())) / np.abs(projection).max() * 255).astype(np.uint8), 'passthrough')
         self.projectionImagePublisher.publish(projectionImgMsg)
         
         # remove margins (margins always have non valid depth readings)
         breach_zones = self.thresholdProjection(projection, surfaceNormal, noise=self.noise)
         breach_zones = self.removeImageMargins(breach_zones)
         breach_zone_ImageMsg = CvBridge().cv2_to_imgmsg((breach_zones * 255).astype(np.uint8), 'passthrough')
-
+        self.thresholdProjectionPublisher.publish(breach_zone_ImageMsg)
         # get current breach point in world coordinates (x,y,z)
         breachPointWorld = self.breachPointWorld
         # get vector from current position to breach point
@@ -285,9 +267,9 @@ class DepthBreacher(object):
         breachPointCamOpt = self.tfPointWorld2CamOpt(depthImageMsg, breachPointWorld, transformTimeStamp=depthCamTimeStamp)
         
         # get breach point in camera pixels:
-        v, u = self.depthCamModel.project3dToPixel((breachPointCamOpt.point.x, breachPointCamOpt.point.y, breachPointCamOpt.point.z))
-        if u <= self.minValidRow or u >= self.maxValidRow or \
-            v <= self.minValidCol or v >= self.maxValidCol:
+        u, v = self.depthCamModel.project3dToPixel((breachPointCamOpt.point.x, breachPointCamOpt.point.y, breachPointCamOpt.point.z))
+        if u <= self.minValidCol or u >= self.maxValidCol or \
+            v <= self.minValidRow or v >= self.maxValidRow:
             rospy.logdebug("Breach point projected from map to camera pixels {}, {} is inside non valid margins of depth cam".format(u,v))
             return -1
       
