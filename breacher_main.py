@@ -9,7 +9,7 @@ logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger("depth_breacher")
 
 import threading
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from distutils.util import strtobool
 
 import rospy
@@ -148,9 +148,9 @@ class DepthBreacher(object):
         return worldXYZ     # MxNx3
 
     @staticmethod
-    def getTransformMatrix4_toWorld(ImageMsg, transformTimeStamp):
+    def getTransformMatrix4_toWorld(ImageMsg):
         """ get 4x4 transofrmation matrix from camera optical frame to map """
-        listner.waitForTransform("/map", ImageMsg.header.frame_id, transformTimeStamp, rospy.Duration(1.0))
+        listner.waitForTransform("/map", ImageMsg.header.frame_id, ImageMsg.header.stamp, rospy.Duration(1.0))
         M = listner.asMatrix("/map", ImageMsg.header)
         return M
     
@@ -247,8 +247,8 @@ class DepthBreacher(object):
         disance2hatch: distance breach plane given in [mm] (assuming perpedicular position to plane)
         """
 
-        plt.ion()
-        plt.show()
+        #plt.ion()
+        #plt.show()
         self.depthImageMsg = depthImageMsg
         surfaceNormal = self.surfaceNormal
         depthOrg = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
@@ -259,7 +259,7 @@ class DepthBreacher(object):
 
         # convert current depth map to world XYZ coordinates using camera rays and depth map
         camOptXYZ = self.projectCamOptRaysTo3D(depth)
-        T = self.getTransformMatrix4_toWorld(depthImageMsg, depthCamTimeStamp)
+        T = self.getTransformMatrix4_toWorld(depthImageMsg)
         # transform xyz points in camera opt to map coordinates
         worldXYZ = self.tranformXYZ(camOptXYZ, T)
         projection = self.projectXYZonSurfaceNormal(worldXYZ, surfaceNormal)
@@ -275,11 +275,11 @@ class DepthBreacher(object):
             self.t0 = t
         self.time.append(depthCamTimeStamp.secs + depthCamTimeStamp.nsecs*1E-9)
         
-        plt.cla()
-        plt.plot(np.array(self.time) - self.t0, np.array(self.vecNorm))
-        plt.scatter(np.array(self.time)[-1] - self.t0, np.array(self.vecNorm)[-1], c='red')
-        plt.draw()
-        plt.pause(0.0001)
+        #plt.cla()
+        #plt.plot(np.array(self.time) - self.t0, np.array(self.vecNorm))
+        #plt.scatter(np.array(self.time)[-1] - self.t0, np.array(self.vecNorm)[-1], c='red')
+        #plt.draw()
+        #plt.pause(0.0001)
         breach_zones = self.thresholdProjection(projection, surfaceNormal, noise=self.noise)
         breach_zones = self.removeImageMargins(breach_zones)
         breach_zone_ImageMsg = CvBridge().cv2_to_imgmsg((breach_zones * 255).astype(np.uint8), 'passthrough')
