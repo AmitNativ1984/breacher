@@ -9,6 +9,7 @@ logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger("depth_breacher")
 
 import threading
+import matplotlib.pyplot as plt
 from distutils.util import strtobool
 
 import rospy
@@ -19,6 +20,7 @@ from vision_msgs.msg import Detection2D
 from vision_msgs.msg import ObjectHypothesisWithPose
 from geometry_msgs.msg import Point
 from geometry_msgs.msg import PointStamped, Vector3Stamped
+from visualization_msgs.msg import Marker
 from image_geometry import PinholeCameraModel
 from std_msgs.msg import Float32
 from cv_bridge import CvBridge
@@ -36,7 +38,7 @@ class DepthBreacher(object):
         self.noise= 0.25 #[m] depth noise
         self.detections = None
         self.distance2window = None
-        self.infDistance = 20 #[m]
+        self.infDistance = 3.5 #[m]
         self.breach_zone = None
         self.pointingFinger = None
         self.mode = 'pointingFinger' # can be opne of: 'area';'pointingFinger'
@@ -48,6 +50,9 @@ class DepthBreacher(object):
         rospy.loginfo('node depth_breach created')
         self.init_subsrcibers()
         self.init_publishers()
+        self.time = []
+        self.vecNorm = []
+        self.t0 = np.inf
 
     def init_subsrcibers(self):
         rospy.Subscriber("/d415/aligned_depth_to_color/image_raw", Image, self.depthImageCallback, queue_size=1, buff_size=2 ** 24)  
@@ -143,8 +148,9 @@ class DepthBreacher(object):
         return worldXYZ     # MxNx3
 
     @staticmethod
-    def getTransformMatrix4_toWorld(ImageMsg):
+    def getTransformMatrix4_toWorld(ImageMsg, transformTimeStamp):
         """ get 4x4 transofrmation matrix from camera optical frame to map """
+        listner.waitForTransform("/map", ImageMsg.header.frame_id, transformTimeStamp, rospy.Duration(1.0))
         M = listner.asMatrix("/map", ImageMsg.header)
         return M
     
@@ -186,7 +192,14 @@ class DepthBreacher(object):
 
 
     def getWorldPointXYZCallback(self, breachPointWorld):
-               
+         # todo: remove to       
+        # pointstamped = PointStamped()
+        # pointstamped.header.stamp = breachPointWorld.header.stamp
+        # pointstamped.header.frame_id = breachPointWorld.header.frame_id
+        # pointstamped.point.x = breachPointWorld.pose.position.x
+        # pointstamped.point.y = breachPointWorld.pose.position.y
+        # pointstamped.point.z = breachPointWorld.pose.position.z
+
         self.breachPointWorld = breachPointWorld
 
     @staticmethod
@@ -234,24 +247,39 @@ class DepthBreacher(object):
         disance2hatch: distance breach plane given in [mm] (assuming perpedicular position to plane)
         """
 
+        plt.ion()
+        plt.show()
         self.depthImageMsg = depthImageMsg
         surfaceNormal = self.surfaceNormal
         depthOrg = bridge.imgmsg_to_cv2(depthImageMsg, desired_encoding='passthrough')             
         depth = depthOrg.copy()
-        depth[depth == 0] = self.infDistance * 1E3
-        depth = cv2.GaussianBlur(depth, (25, 25), 0.25)
+        depth[depth == 0] = depth.max()#self.infDistance * 1E3
+        # depth = cv2.GaussianBlur(depth, (25, 25), 0.25)
         depthCamTimeStamp = depthImageMsg.header.stamp
 
         # convert current depth map to world XYZ coordinates using camera rays and depth map
         camOptXYZ = self.projectCamOptRaysTo3D(depth)
-        T = self.getTransformMatrix4_toWorld(depthImageMsg)
+        T = self.getTransformMatrix4_toWorld(depthImageMsg, depthCamTimeStamp)
         # transform xyz points in camera opt to map coordinates
         worldXYZ = self.tranformXYZ(camOptXYZ, T)
         projection = self.projectXYZonSurfaceNormal(worldXYZ, surfaceNormal)
-        projectionImgMsg = CvBridge().cv2_to_imgmsg( (np.abs((np.abs(projection) - np.abs(projection).min())) / np.abs(projection).max() * 255).astype(np.uint8), 'passthrough')
+        projectionDisp = cv2.normalize(projection, None, 255,0, cv2.NORM_MINMAX, cv2.CV_8UC1)
+        # projectionDisp = (np.abs((np.abs(projection) - np.abs(projection).min())) / np.abs(projection).max() * 255).astype(np.uint8)
+        projectionImgMsg = CvBridge().cv2_to_imgmsg( np.dstack((projectionDisp, projectionDisp, projectionDisp)), 'passthrough')
         self.projectionImagePublisher.publish(projectionImgMsg)
         
         # remove margins (margins always have non valid depth readings)
+        self.vecNorm.append(np.linalg.norm([surfaceNormal.vector.x, surfaceNormal.vector.y, surfaceNormal.vector.z]))
+        t = depthCamTimeStamp.secs + depthCamTimeStamp.nsecs*1E-9
+        if t < self.t0:
+            self.t0 = t
+        self.time.append(depthCamTimeStamp.secs + depthCamTimeStamp.nsecs*1E-9)
+        
+        plt.cla()
+        plt.plot(np.array(self.time) - self.t0, np.array(self.vecNorm))
+        plt.scatter(np.array(self.time)[-1] - self.t0, np.array(self.vecNorm)[-1], c='red')
+        plt.draw()
+        plt.pause(0.0001)
         breach_zones = self.thresholdProjection(projection, surfaceNormal, noise=self.noise)
         breach_zones = self.removeImageMargins(breach_zones)
         breach_zone_ImageMsg = CvBridge().cv2_to_imgmsg((breach_zones * 255).astype(np.uint8), 'passthrough')
@@ -325,7 +353,6 @@ class DepthBreacher(object):
         newImageMsg = bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough")
         newImageMsg.header.stamp = rospy.Time.now()
         self.colorImagePublisher.publish(bridge.cv2_to_imgmsg(cv2.cvtColor(colorImageRaw, cv2.COLOR_BGR2RGB), encoding="passthrough"))       
-    
         return
 
 
