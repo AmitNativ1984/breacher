@@ -1062,3 +1062,4 @@ venv/local/lib
 .idea/modules.xml
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
+.idea/workspace.xml
