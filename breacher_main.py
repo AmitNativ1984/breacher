@@ -67,7 +67,7 @@ class DepthBreacher(object):
     def init_publishers(self):
         self.breachImagePublisher = rospy.Publisher("/breacher/breachImage", Image, queue_size=10)
         self.colorImagePublisher = rospy.Publisher("/breacher/breachImageColor", Image, queue_size=1)
-        self.breachPointWorldPosPublisher = rospy.Publisher("/breacher/breachPointWorldPos", PointStamped, queue_size=10)
+        self.breachPointWorldPosPublisher = rospy.Publisher("/breacher/breachPointWorld", PointStamped, queue_size=10)
         self.projectionImagePublisher = rospy.Publisher("/breacher/projectionImage", Image, queue_size=10)
         self.thresholdProjectionPublisher = rospy.Publisher("/breach/threholdedProjectio", Image, queue_size=10)
         self.pclPublisher = rospy.Publisher("/breach/projectedPCL", PointCloud2, queue_size=1)
@@ -213,7 +213,7 @@ class DepthBreacher(object):
                 
                 R = np.sqrt((centroid[0] - pixel[0]) ** 2 +
                             (centroid[1] - pixel[1]) ** 2)
-                if R < dist and areaPixels > minBlobAreaPixels:
+                if R < dist and areaPixels > minBlobAreaPixels**2:
                     dist = R
                     label_id = currlabel
           
@@ -332,12 +332,19 @@ class DepthBreacher(object):
         
         # convert new breach point (in pixels) to true position
         vecCamOpt2BreachPointWorld = self.tfWorld2BaseLink(depthImageMsg, breachPointWorldPos, transformTimeStamp=depthCamTimeStamp)
-        distance2Target = 1E3 * np.linalg.norm(np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z]))
+        # distance2Target = 1E3 * np.linalg.norm(np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z]))
         ray = np.array(self.depthCamModel.projectPixelTo3dRay((u_new,v_new)))
+        surfaceNormalVec = np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z])
+        n = np.linalg.norm(np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z]))
+        normalizedSurfaceNormal = surfaceNormalVec / n
+        normalizedRay = np.linalg.norm(ray)
+        distance2Target = np.dot(ray, normalizedSurfaceNormal) / n
+        
+        
         breachPointCamOpt = self.createPointStamped(depthCamTimeStamp, depthImageMsg.header.frame_id,
-                                                    ray[0] * distance2Target/1E3,
-                                                    ray[1] * distance2Target/1E3,
-                                                    ray[2] * distance2Target/1E3)
+                                                    ray[0] * distance2Target,
+                                                    ray[1] * distance2Target,
+                                                    ray[2] * distance2Target)
 
         breachPointWorldPos = self.tfPointCamOpt2World(breachPointCamOpt, depthCamTimeStamp)
 
