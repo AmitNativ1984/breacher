@@ -176,6 +176,12 @@ class DepthBreacher(object):
 
         return currCamTranslation, currCamRotation
     
+    @staticmethod 
+    def tfFramePosInWorld(targetFrame, transformTimeStamp):
+        listner.waitForTransform(targetFrame, "/map", transformTimeStamp, rospy.Duration(1.0))
+        translation, quaternion = listner.lookupTransform(targetFrame, "/map", transformTimeStamp)
+        return translation, quaternion
+    
     @staticmethod
     def tfPointWorld2CamOpt(ImageMsg, worldPoint, transformTimeStamp):
         listner.waitForTransform(ImageMsg.header.frame_id, "/map", transformTimeStamp, rospy.Duration(1.0))
@@ -331,22 +337,26 @@ class DepthBreacher(object):
         breach_zone[cc_img == label_id] = 1
         
         # convert new breach point (in pixels) to true position
-        vecCamOpt2BreachPointWorld = self.tfWorld2BaseLink(depthImageMsg, breachPointWorldPos, transformTimeStamp=depthCamTimeStamp)
-        # distance2Target = 1E3 * np.linalg.norm(np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z]))
-        ray = np.array(self.depthCamModel.projectPixelTo3dRay((u_new,v_new)))
-        surfaceNormalVec = np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z])
-        n = np.linalg.norm(np.array([vecCamOpt2BreachPointWorld.point.x, vecCamOpt2BreachPointWorld.point.y, vecCamOpt2BreachPointWorld.point.z]))
-        normalizedSurfaceNormal = surfaceNormalVec / n
-        normalizedRay = np.linalg.norm(ray)
-        distance2Target = np.dot(ray, normalizedSurfaceNormal) / n
-        
-        
+        nWorldSurface = np.array([surfaceNormal.vector.x, surfaceNormal.vector.y, surfaceNormal.vector.z])
+        n_normalized = nWorldSurface / np.linalg.norm(nWorldSurface)
+        camPos, camRot = self.tfFramePosInWorld(depthImageMsg.header.frame_id, depthCamTimeStamp)
+        rayCam = np.array(self.depthCamModel.projectPixelTo3dRay((u_new,v_new)))   # ray from camopt to new breach point with depth marking
         breachPointCamOpt = self.createPointStamped(depthCamTimeStamp, depthImageMsg.header.frame_id,
-                                                    ray[0] * distance2Target,
-                                                    ray[1] * distance2Target,
-                                                    ray[2] * distance2Target)
+                                                    rayCam[0] * depth[int(u_new), int(v_new)]/1E3,
+                                                    rayCam[1] * depth[int(u_new), int(v_new)]/1E3,
+                                                    rayCam[2] * depth[int(u_new), int(v_new)]/1E3)
 
-        breachPointWorldPos = self.tfPointCamOpt2World(breachPointCamOpt, depthCamTimeStamp)
+        breachPointWorld = self.tfPointCamOpt2World(breachPointCamOpt, depthCamTimeStamp)                                                       
+        rayWorld = np.array([breachPointWorld.point.x, breachPointWorld.point.y, breachPointWorld.point.z]) - camPos
+        nCameraSurface = nWorldSurface - np.dot(camPos, n_normalized) * n_normalized
+        rayWorld_n = np.dot(rayWorld, n_normalized) * n_normalized
+        distance2breachPoint = np.linalg.norm(nCameraSurface)  / np.linalg.norm(rayWorld_n)
+        breachPointWorldPos = self.createPointStamped(depthCamTimeStamp, "/map",
+                                                    rayWorld[0] * distance2breachPoint + camPos[0],
+                                                    rayWorld[1] * distance2breachPoint + camPos[1],
+                                                    rayWorld[2] * distance2breachPoint + camPos[2])
+
+        
 
         # publish updated breach point in "/map" coordinates
         self.breachPointWorldPosPublisher.publish(breachPointWorldPos)
