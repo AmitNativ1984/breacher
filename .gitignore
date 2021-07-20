@@ -1,4 +1,5 @@
 .vscode/launch.json
+<<<<<<< HEAD
 venv/bin/activate
 venv/bin/activate_this.py
 venv/bin/activate.csh
@@ -1057,9 +1058,14 @@ venv/local/bin
 venv/local/include
 venv/local/lib
 .idea/.gitignore
+=======
+>>>>>>> plane_eq_thres
 .idea/breacher.iml
 .idea/misc.xml
 .idea/modules.xml
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
+<<<<<<< HEAD
 .idea/workspace.xml
+=======
+>>>>>>> plane_eq_thres
